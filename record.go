@@ -178,6 +178,11 @@ again:
 	}
 }
 
+// HasRecord returns if there is a record available to be read from the ring.
+func (ev *Event) HasRecord() bool {
+	return atomic.LoadUint64(&ev.meta.Data_head) != atomic.LoadUint64(&ev.meta.Data_tail)
+}
+
 // resetRing advances the read pointer to the write pointer to discard all the
 // data in the ring. This is done when bogus data is read from the ring.
 func (ev *Event) resetRing() {
