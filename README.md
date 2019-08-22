@@ -1,3 +1,17 @@
+----
+
+This is a clone of the `golang.org/x/sys/unix/linux/perf` submitted by
+[acln0](https://github.com/acln0) to review at
+https://go-review.googlesource.com/c/sys/+/168059
+
+An alternative working tree for this package can also be found
+at https://github.com/acln0/perf
+
+This Elastic fork contains bugfixes and features necessary for
+our KProbes implementation.
+
+----
+
 `perf` API client package for Linux. See `man 2 perf_event_open` and
 `include/uapi/linux/perf_event.h`.
 
