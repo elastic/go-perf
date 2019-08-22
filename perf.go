@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+// +build linux
+
 package perf
 
 import (
@@ -12,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -92,6 +95,11 @@ type Event struct {
 	// pollresp receives responses from the poll goroutine associated
 	// with the ring, back to ReadRawRecord.
 	pollresp chan pollresp
+
+	// recordBuffer is used as storage for records returned by ReadRecord
+	// and ReadRawRecord. This means memory for records returned from those
+	// methods will be overwritten by successive calls.
+	recordBuffer []byte
 }
 
 // Open opens the event configured by attr.
@@ -119,6 +127,12 @@ type Event struct {
 // associated with the specified group Event.
 func Open(a *Attr, pid, cpu int, group *Event) (*Event, error) {
 	return open(a, pid, cpu, group, 0)
+}
+
+// OpenWithFlags is like Open but allows to specify additional flags to be
+// passed to perf_event_open(2).
+func OpenWithFlags(a *Attr, pid, cpu int, group *Event, flags int) (*Event, error) {
+	return open(a, pid, cpu, group, flags)
 }
 
 // OpenCGroup is like Open, but activates per-container system-wide
@@ -233,7 +247,8 @@ func (ev *Event) MapRingNumPages(num int) error {
 		return nil
 	}
 
-	size := (1 + num) * unix.Getpagesize()
+	pgSize := unix.Getpagesize()
+	size := (1 + num) * pgSize
 	const prot = unix.PROT_READ | unix.PROT_WRITE
 	const flags = unix.MAP_SHARED
 	ring, err := unix.Mmap(ev.perffd, 0, size, prot, flags)
@@ -248,8 +263,8 @@ func (ev *Event) MapRingNumPages(num int) error {
 	// observed to do this. Try to detect this condition, and adjust
 	// the values accordingly.
 	if meta.Data_offset == 0 && meta.Data_size == 0 {
-		meta.Data_offset = uint64(unix.Getpagesize())
-		meta.Data_size = uint64(num) * meta.Data_offset
+		atomic.StoreUint64(&meta.Data_offset, uint64(pgSize))
+		atomic.StoreUint64(&meta.Data_size, uint64(num*pgSize))
 	}
 
 	ringdata := ring[meta.Data_offset:]
