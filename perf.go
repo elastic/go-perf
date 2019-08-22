@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -235,7 +236,8 @@ func (ev *Event) MapRingNumPages(num int) error {
 		return nil
 	}
 
-	size := (1 + num) * unix.Getpagesize()
+	pgSize := unix.Getpagesize()
+	size := (1 + num) * pgSize
 	const prot = unix.PROT_READ | unix.PROT_WRITE
 	const flags = unix.MAP_SHARED
 	ring, err := unix.Mmap(ev.perffd, 0, size, prot, flags)
@@ -250,8 +252,8 @@ func (ev *Event) MapRingNumPages(num int) error {
 	// observed to do this. Try to detect this condition, and adjust
 	// the values accordingly.
 	if meta.Data_offset == 0 && meta.Data_size == 0 {
-		meta.Data_offset = uint64(unix.Getpagesize())
-		meta.Data_size = uint64(num) * meta.Data_offset
+		atomic.StoreUint64(&meta.Data_offset, uint64(pgSize))
+		atomic.StoreUint64(&meta.Data_size, uint64(num*pgSize))
 	}
 
 	ringdata := ring[meta.Data_offset:]
