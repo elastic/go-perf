@@ -19,7 +19,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
-	"golang.org/x/sys/unix/linux/perf"
+
+	"github.com/elastic/go-perf"
 )
 
 func TestOpen(t *testing.T) {

@@ -14,7 +14,7 @@ import (
 	"time"
 	"unsafe"
 
-	"golang.org/x/sys/unix/linux/perf"
+	"github.com/elastic/go-perf"
 )
 
 func TestSampleUserRegisters(t *testing.T) {
