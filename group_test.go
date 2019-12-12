@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/sys/unix/linux/perf"
+	"github.com/elastic/go-perf"
 )
 
 func TestGroup(t *testing.T) {
