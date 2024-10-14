@@ -1,5 +1,5 @@
 module github.com/elastic/go-perf
 
-go 1.20
+go 1.18
 
-require golang.org/x/sys v0.25.0
+require golang.org/x/sys v0.26.0
