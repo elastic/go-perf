@@ -521,11 +521,11 @@ func (ev *Event) QueryBPF(max uint32) ([]uint32, error) {
 
 // BUG(acln): PERF_EVENT_IOC_MODIFY_ATTRIBUTES is not implemented
 
-func (ev *Event) ioctlNoArg(number int) error {
+func (ev *Event) ioctlNoArg(number int64) error {
 	return ev.ioctlInt(number, 0)
 }
 
-func (ev *Event) ioctlInt(number int, arg uintptr) error {
+func (ev *Event) ioctlInt(number int64, arg uintptr) error {
 	_, _, e := unix.Syscall(unix.SYS_IOCTL, uintptr(ev.perffd), uintptr(number), arg)
 	if e != 0 {
 		return e
