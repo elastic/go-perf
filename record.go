@@ -449,10 +449,11 @@ const (
 	RecordTypeSwitch        RecordType = unix.PERF_RECORD_SWITCH
 	RecordTypeSwitchCPUWide RecordType = unix.PERF_RECORD_SWITCH_CPU_WIDE
 	RecordTypeNamespaces    RecordType = unix.PERF_RECORD_NAMESPACES
+	RecordTypeKSymbol       RecordType = unix.PERF_RECORD_KSYMBOL
 )
 
 func (rt RecordType) known() bool {
-	return rt >= RecordTypeMmap && rt <= RecordTypeNamespaces
+	return rt >= RecordTypeMmap && rt <= RecordTypeKSymbol
 }
 
 // RecordHeader is the header present in every overflow record.
@@ -514,6 +515,7 @@ var newRecordFuncs = [...]func(ev *Event) Record{
 	RecordTypeSwitch:        func(_ *Event) Record { return &SwitchRecord{} },
 	RecordTypeSwitchCPUWide: func(_ *Event) Record { return &SwitchCPUWideRecord{} },
 	RecordTypeNamespaces:    func(_ *Event) Record { return &NamespacesRecord{} },
+	RecordTypeKSymbol:       func(_ *Event) Record { return &KSymbolRecord{} },
 }
 
 func newReadRecord(ev *Event) Record {
@@ -1261,6 +1263,38 @@ func (nr *NamespacesRecord) DecodeFrom(raw *RawRecord, ev *Event) error {
 		f.uint64(&nr.Namespaces[i].Inode)
 	}
 	f.idCond(ev.a.Options.SampleIDAll, &nr.SampleID, ev.a.SampleFormat)
+	return nil
+}
+
+type KSymbolRecord struct {
+	RecordHeader
+	Addr  uint64
+	Len   uint32
+	Type  uint16
+	Flags uint16
+	Name  string
+	SampleID
+}
+
+func (kr *KSymbolRecord) DecodeFrom(raw *RawRecord, ev *Event) error {
+	kr.RecordHeader = raw.Header
+	f := raw.fields()
+	f.uint64(&kr.Addr)
+	var typeAndFlags uint32
+	f.uint32(&kr.Len, &typeAndFlags)
+	kr.Type = uint16(typeAndFlags)
+	kr.Flags = uint16(typeAndFlags >> 16)
+	remaining := int(kr.RecordHeader.Size - 24)
+	zeroOff := -1
+	for i := 0; i < remaining; i++ {
+		if f[i] == 0 {
+			zeroOff = i
+			break
+		}
+	}
+	kr.Name = string(f[:zeroOff])
+	f.advance(remaining)
+	f.idCond(ev.a.Options.SampleIDAll, &kr.SampleID, ev.a.SampleFormat)
 	return nil
 }
 
