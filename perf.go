@@ -1180,6 +1180,9 @@ type Options struct {
 
 	// Namespaces enables the generation of NamespacesRecord records.
 	Namespaces bool
+
+	// KSymbol enables the generation of KSymbolRecord records.
+	KSymbol bool
 }
 
 func (opt Options) marshal() uint64 {
@@ -1212,6 +1215,7 @@ func (opt Options) marshal() uint64 {
 		opt.ContextSwitch,
 		opt.writeBackward,
 		opt.Namespaces,
+		opt.KSymbol,
 	}
 	val := marshalBitwiseUint64(fields)
 
