@@ -74,6 +74,16 @@ Tracepoints are also supported:
 	// ...
 	fmt.Printf("pid = %d, tid = %d\n", sr.Pid, sr.Tid)
 
+BPF programs
+
+BPF programs can be attached using SetBPF or SetBPFLink. SetBPFLink supports
+BPF cookies (Linux 5.15+), allowing a 64-bit value to be passed to the BPF
+program via bpf_get_attach_cookie():
+
+	link, err := ev.SetBPFLink(bpfProgFD, &perf.LinkOptions{Cookie: 0x1234})
+	// ...
+	defer link.Close()
+
 For more detailed information, see the examples, and man 2 perf_event_open.
 
 NOTE: this package is experimental and does not yet offer compatibility
