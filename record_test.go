@@ -250,19 +250,21 @@ func testPollDisabledByExit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unix.Close(readyevfd)
 
 	startevfd, err := unix.Eventfd(0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unix.Close(startevfd)
 
 	cmd := exec.Command(self)
 	cmd.Env = append(os.Environ(), errDisabledTestEnv+"=1")
 	cmd.ExtraFiles = []*os.File{
 		os.NewFile(uintptr(readyevfd), "readyevfd"),
 		os.NewFile(uintptr(startevfd), "startevfd"),
+	}
+	// The files own the eventfds; closing the raw fds too would close reused numbers.
+	for _, f := range cmd.ExtraFiles {
+		defer f.Close()
 	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -556,19 +558,16 @@ func testComm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unix.Close(readyevfd)
 
 	startevfd, err := unix.Eventfd(0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unix.Close(startevfd)
 
 	sawcommevfd, err := unix.Eventfd(0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unix.Close(sawcommevfd)
 
 	cmd := exec.Command(self)
 	cmd.Env = append(os.Environ(), commTestEnv+"=1")
@@ -576,6 +575,10 @@ func testComm(t *testing.T) {
 		os.NewFile(uintptr(readyevfd), "readyevfd"),
 		os.NewFile(uintptr(startevfd), "startevfd"),
 		os.NewFile(uintptr(sawcommevfd), "sawcommevfd"),
+	}
+	// The files own the eventfds; closing the raw fds too would close reused numbers.
+	for _, f := range cmd.ExtraFiles {
+		defer f.Close()
 	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -685,19 +688,21 @@ func testExit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unix.Close(readyevfd)
 
 	startevfd, err := unix.Eventfd(0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unix.Close(startevfd)
 
 	cmd := exec.Command(self)
 	cmd.Env = append(os.Environ(), exitTestEnv+"=1")
 	cmd.ExtraFiles = []*os.File{
 		os.NewFile(uintptr(readyevfd), "readyevfd"),
 		os.NewFile(uintptr(startevfd), "startevfd"),
+	}
+	// The files own the eventfds; closing the raw fds too would close reused numbers.
+	for _, f := range cmd.ExtraFiles {
+		defer f.Close()
 	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
