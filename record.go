@@ -83,99 +83,78 @@ func (ev *Event) ReadRawRecord(ctx context.Context, raw *RawRecord) error {
 		return nil
 	}
 
-	// If the context has a deadline, and that deadline is in the future,
-	// use it to compute a timeout for ppoll(2). If the context is
-	// expired, bail out immediately. Otherwise, the timeout is zero,
-	// which means no timeout.
-	var timeout time.Duration
-	deadline, ok := ctx.Deadline()
-	if ok {
-		timeout = time.Until(deadline)
-		if timeout <= 0 {
-			<-ctx.Done()
-			return ctx.Err()
-		}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
-	// Start a round of polling, then await results. Only one request
-	// can be in flight at a time, and the whole request-response cycle
-	// is owned by the current invocation of ReadRawRecord.
-again:
-	ev.pollreq <- pollreq{timeout: timeout}
-	select {
-	case <-ctx.Done():
-		active := false
-		err := ctx.Err()
-		if err == context.Canceled {
-			// Initiate active wakeup on ev.wakeupfd, and wait for
-			// doPoll to return. doPoll might miss this signal,
-			// but that's okay: see below.
-			val := uint64(1)
-			buf := (*[8]byte)(unsafe.Pointer(&val))[:]
-			unix.Write(ev.wakeupfd, buf)
-			active = true
+	for {
+		hup, err := ev.waitReadable(ctx)
+		if err != nil {
+			return err
 		}
-		<-ev.pollresp
-
-		// We don't know if doPoll woke up due to our active wakeup
-		// or because it timed out. It doesn't make a difference.
-		// The important detail here is that doPoll does not touch
-		// ev.wakeupfd (besides polling it for readiness). If we
-		// initiated active wakeup, we must restore the event file
-		// descriptor to quiescent state ourselves, in order to avoid
-		// a spurious wakeup during the next round of polling.
-		if active {
-			var buf [8]byte
-			unix.Read(ev.wakeupfd, buf[:])
+		if ev.readRawRecordNonblock(raw) {
+			return nil
 		}
-		return err
-	case resp := <-ev.pollresp:
-		if resp.err != nil {
-			// Polling failed. Nothing to do but report the error.
-			return resp.err
-		}
-		if resp.perfhup {
-			// Saw POLLHUP on ev.perffd. See also the
-			// documentation for ErrDisabled.
+		if hup {
+			// See the documentation for ErrDisabled.
 			return ErrDisabled
 		}
-		if !resp.perfready {
-			// Here, we have not touched ev.wakeupfd, there
-			// was no polling error, and ev.perffd is not
-			// ready. Therefore, ppoll(2) must have timed out.
-			//
-			// The reason we are here is the following: doPoll
-			// woke up, and immediately sent us a pollresp, which
-			// won the race with <-ctx.Done(), such that this
-			// select case fired. In any case, ctx is expired,
-			// because we wouldn't be here otherwise.
-			<-ctx.Done()
-			return ctx.Err()
-		}
-		if !ev.readRawRecordNonblock(raw) {
-			// It might happen that an overflow notification was
-			// generated on the file descriptor, we observed it
-			// as POLLIN, but there is still nothing new for us
-			// to read in the ring buffer.
-			//
-			// This is because the notification is raised based
-			// on the Attr.Wakeup and Attr.Options.Watermark
-			// settings, rather than based on what events we've
-			// seen already.
-			//
-			// For example, for an event with Attr.Wakeup == 1,
-			// POLLIN will be indicated on the file descriptor
-			// after the first event, regardless of whether we
-			// have consumed it from the ring buffer or not.
-			//
-			// If we happen to see POLLIN with an empty ring
-			// buffer, the only thing to do is to wait again.
-			//
-			// See also https://github.com/acln0/perfwakeup.
-			goto again
-		}
-		return nil
+		// It might happen that an overflow notification was
+		// generated on the file descriptor, but there is still
+		// nothing new for us to read in the ring buffer.
+		//
+		// This is because the notification is raised based
+		// on the Attr.Wakeup and Attr.Options.Watermark
+		// settings, rather than based on what events we've
+		// seen already.
+		//
+		// If we happen to wake up with an empty ring buffer,
+		// the only thing to do is to wait again.
+		//
+		// See also https://github.com/acln0/perfwakeup.
 	}
+}
+
+// waitReadable blocks until the ring has a record, the event is disabled
+// (see ErrDisabled), or ctx is done.
+//
+// The wait is parked in the runtime network poller instead of a blocking
+// poll(2), so a waiting reader does not hold an OS thread. This matters for
+// system-wide monitoring, which needs one event per CPU.
+func (ev *Event) waitReadable(ctx context.Context) (hup bool, err error) {
+	if err := ev.pollfile.SetReadDeadline(time.Time{}); err != nil {
+		return false, err
+	}
+
+	// A done context wakes the poller by expiring the read deadline.
+	expired := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		ev.pollfile.SetReadDeadline(time.Unix(1, 0))
+		close(expired)
+	})
+
+	err = ev.pollconn.Read(func(uintptr) bool {
+		if ev.HasRecord() {
+			return true
+		}
+		// The network poller reports POLLHUP as plain readiness, so ask
+		// the kernel directly. A zero timeout does not block.
+		pollfds := []unix.PollFd{{Fd: int32(ev.perffd), Events: unix.POLLIN}}
+		unix.Poll(pollfds, 0)
+		hup = pollfds[0].Revents&unix.POLLHUP != 0
+		return hup || ev.HasRecord()
+	})
+
+	if !stop() {
+		// The deadline update has started: wait for it, so that it
+		// cannot expire a later call.
+		<-expired
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		<-ctx.Done()
+		return false, ctx.Err()
+	}
+	return hup, err
 }
 
 // HasRecord returns if there is a record available to be read from the ring.
@@ -239,69 +218,6 @@ func (ev *Event) readRawRecordNonblock(raw *RawRecord) bool {
 	// Notify the kernel of the last record we've seen.
 	atomic.AddUint64(&ev.meta.Data_tail, msgLen)
 	return true
-}
-
-// poll services requests from ev.pollreq and sends responses on ev.pollresp.
-func (ev *Event) poll() {
-	defer close(ev.pollresp)
-
-	for req := range ev.pollreq {
-		ev.pollresp <- ev.doPoll(req)
-	}
-}
-
-// doPoll executes one round of polling on ev.perffd and ev.wakeupfd.
-//
-// A req.timeout value of zero is interpreted as "no timeout". req.timeout
-// must not be negative.
-func (ev *Event) doPoll(req pollreq) pollresp {
-	var timeout *unix.Timespec
-	if req.timeout > 0 {
-		ts := unix.NsecToTimespec(req.timeout.Nanoseconds())
-		timeout = &ts
-	}
-
-	pollfds := []unix.PollFd{
-		{Fd: int32(ev.perffd), Events: unix.POLLIN},
-		{Fd: int32(ev.wakeupfd), Events: unix.POLLIN},
-	}
-
-again:
-	_, err := unix.Ppoll(pollfds, timeout, nil)
-	// TODO(acln): do we need to do this business at all? See #20400.
-	if err == unix.EINTR {
-		goto again
-	}
-
-	// If we are here and we have successfully woken up, it is for one
-	// of four reasons: we got POLLIN on ev.perffd, we got POLLHUP on
-	// ev.perffd (see ErrDisabled), the ppoll(2) timeout fired, or we
-	// got POLLIN on ev.wakeupfd.
-	//
-	// Report if the perf fd is ready, if we saw POLLHUP, and any
-	// errors except EINTR. The machinery is documented in more detail
-	// in ReadRawRecord.
-	return pollresp{
-		perfready: pollfds[0].Revents&unix.POLLIN != 0,
-		perfhup:   pollfds[0].Revents&unix.POLLHUP != 0,
-		err:       os.NewSyscallError("ppoll", err),
-	}
-}
-
-type pollreq struct {
-	// timeout is the timeout for ppoll(2): zero means no timeout
-	timeout time.Duration
-}
-
-type pollresp struct {
-	// perfready indicates if the perf FD (ev.perffd) is ready.
-	perfready bool
-
-	// perfhup indicates if POLLUP was observed on ev.perffd.
-	perfhup bool
-
-	// err is the *os.SyscallError from ppoll(2).
-	err error
 }
 
 // SampleFormat configures information requested in overflow packets.

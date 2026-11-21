@@ -84,17 +84,13 @@ type Event struct {
 	// meta is the metadata page: &ring[0].
 	meta *unix.PerfEventMmapPage
 
-	// wakeupfd is an event file descriptor (see eventfd(2)). It is used to
-	// unblock calls to ReadRawRecord when the associated context expires.
-	wakeupfd int
+	// pollfile is a duplicate of perffd registered with the runtime
+	// network poller, so that ReadRawRecord can wait for the ring to
+	// become readable without holding an OS thread.
+	pollfile *os.File
 
-	// pollreq communicates requests from ReadRawRecord to the poll goroutine
-	// associated with the ring.
-	pollreq chan pollreq
-
-	// pollresp receives responses from the poll goroutine associated
-	// with the ring, back to ReadRawRecord.
-	pollresp chan pollresp
+	// pollconn is pollfile's raw connection.
+	pollconn syscall.RawConn
 
 	// recordBuffer is used as storage for records returned by ReadRecord
 	// and ReadRawRecord. This means memory for records returned from those
@@ -269,19 +265,25 @@ func (ev *Event) MapRingNumPages(num int) error {
 
 	ringdata := ring[meta.Data_offset:]
 
-	wakeupfd, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
+	// perffd is non-blocking (see open), so os.NewFile registers the
+	// duplicate with the runtime network poller. A duplicate is used
+	// because the *os.File owns its descriptor.
+	pollfd, err := unix.FcntlInt(uintptr(ev.perffd), unix.F_DUPFD_CLOEXEC, 0)
 	if err != nil {
-		return os.NewSyscallError("eventfd", err)
+		return os.NewSyscallError("fcntl", err)
+	}
+	pollfile := os.NewFile(uintptr(pollfd), "perf")
+	pollconn, err := pollfile.SyscallConn()
+	if err != nil {
+		pollfile.Close()
+		return err
 	}
 
 	ev.ring = ring
 	ev.meta = meta
 	ev.ringdata = ringdata
-	ev.wakeupfd = wakeupfd
-	ev.pollreq = make(chan pollreq)
-	ev.pollresp = make(chan pollresp)
-
-	go ev.poll()
+	ev.pollfile = pollfile
+	ev.pollconn = pollconn
 
 	return nil
 }
@@ -563,10 +565,8 @@ func (e *ioctlError) Unwrap() error { return e.err }
 // other methods on the Event.
 func (ev *Event) Close() error {
 	if ev.ring != nil {
-		close(ev.pollreq)
-		<-ev.pollresp
+		ev.pollfile.Close()
 		unix.Munmap(ev.ring)
-		unix.Close(ev.wakeupfd)
 	}
 
 	for _, ev := range ev.owned {
